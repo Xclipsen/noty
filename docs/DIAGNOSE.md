@@ -11,7 +11,7 @@ Die normale noty sendet nichts automatisch: Der Schalter „Fehlerberichte autom
 ## Stand der Nachweise
 
 - **Implementiert:** Core (Format, Ereignisprotokoll, Ablage, Auswertung), App (MetricKit, Hänger-Wächter, Messpunkte, Einstellungen › Diagnose), Empfangsdienst, Veröffentlichung mit Schlüssel und Binärdatei, Auswertungsskript.
-- **Geprüft:** Core-Tests (`DiagnosticTests`) und Servertests (`diagnostics/test_server.py`, `scripts/test_diag_report.py`) bestehen. iPad-SDK-Build erfolgreich.
+- **Geprüft:** Core-Tests (`DiagnosticTests`) und Servertests (`diagnostics/test_server.py`, `scripts/test_diag_report.py`) bestehen. iPad-SDK-Build erfolgreich. Stand 11.11.2026 (`feat/audit-fixes`, Feldprüfung des Servers und gehärtete Auswertung): Python-Tests 35, 1 übersprungen, OK, darunter neu `ValidationTests` und `HardenedServerTests` (Server) und `UntrustedStore` (Auswertung); Core-Test `testKindFixtureIsWhatTheReporterBuilds`. Der laufende Dienst arbeitet bis zu einem `sudo bash diagnostics/install.sh` noch mit dem alten Code (noch nicht ausgeführt).
 - **Server:** auf diesem Rechner installiert und aktiv. Ende-zu-Ende über den öffentlichen HTTPS-Pfad: Testbericht angenommen (201), derselbe Bericht erneut 409, ohne Schlüssel 401. Die Testdatei wurde danach gelöscht.
 - **Nicht veröffentlicht, nicht installiert, auf dem iPad ungeprüft.** Insbesondere **ungeprüft**: Zustellung durch MetricKit, Hänger-Wächter am Gerät, Senden aus der App, Einfluss auf Leistung und Schreibgefühl. Ablauf: [TESTING](TESTING.md#fehler--und-ruckler-diagnose-08112026-branch-featdiagnose).
 
@@ -55,7 +55,7 @@ Zusätzlich notiert die App feste Ereignisse wie Startphasen (`phase.library`, `
 
 ## Inhalt eines Berichts
 
-`DiagnosticReport`, JSON, `formatVersion 1`. Gemeinsame Vorlage für Swift, Server und Skript: `diagnostics/fixtures/report-v1.json`.
+`DiagnosticReport`, JSON, `formatVersion 1`. Gemeinsame Vorlage für Swift, Server und Skript: `diagnostics/fixtures/report-v1.json`. Seit 11.11.2026 dazu `diagnostics/fixtures/reports-v1-kinds.json` mit Berichten jeder Art (16 Berichte), so wie `DiagnosticReporter` sie baut (Core-Test `testKindFixtureIsWhatTheReporterBuilds`, neu geschrieben mit `NOTY_WRITE_DIAG_FIXTURE=1`); der Server muss sie annehmen, die Auswertung sie zeigen.
 
 - App: Kanal (`stable`, `dev`, `ai`, `calendar`), Bundle-ID, Version, Build, Commit (von `publish_ota.sh`; lokal leer).
 - Gerät: nur Modellkennung (z. B. `iPad17,1`) und iPadOS-Version; kein Name, keine UDID.
@@ -63,7 +63,7 @@ Zusätzlich notiert die App feste Ereignisse wie Startphasen (`phase.library`, `
 - `summary`: deutscher Einzeiler aus festen Wörtern und Zahlen. `signature`: Art, Vorgang oder Muster und die innersten drei App-Frames; gruppiert gleiche Ursachen.
 - `details`: feste Schlüssel mit Systemcodes und Zahlen (Ausnahmetyp, Signal, `terminationReason`, Dauer, Fehlerdomäne und -code).
 - `callStack`: Bildname + Offset (+ UUID), innerster Frame zuerst. Über 512 Frames bleiben die innersten 384 und die äußersten 64.
-- `breadcrumbs`: die letzten bis zu 200 Ereignisse des Laufs, nur feste Namen und ganze Zahlen.
+- `breadcrumbs`: die letzten bis zu 200 Ereignisse des Laufs, nur feste Namen und ganze Zahlen. 200 Ereignisse und 512 Frames sind seit 11.11.2026 auch Grenzen des Servers (mehr → 400).
 - `payload`: MetricKits eigenes JSON ohne Meldungstexte; über 600 KB entfällt es (`payloadDropped`).
 
 Bekannte Muster werden benannt: Stapelüberlauf, Watchdog (`0x8badf00d`), Swift-Laufzeitfalle, Objective-C-Ausnahme, SIGABRT, Speicherzugriffsfehler, Speicherlimit.
@@ -84,8 +84,8 @@ Die ältere ausführliche Hänger-Diagnose (`Documents/Diagnose/haenger.txt`) un
 - `DiagnosticPrivacy` prüft beim Erstellen jedes Berichts erneut: Namen nur `A–Z a–z 0–9 . _ -`, höchstens 48 Zeichen; Angaben nur druckbares ASCII ohne `/`, `\`, `~`, höchstens 160 Zeichen. Anderes fällt weg oder wird `?`.
 - Von Fehlern bleiben nur Domäne und Code, nie Beschreibung oder `userInfo`.
 - Aus MetricKit-JSON werden `composedMessage`, `formatString`, `arguments`, `message` und der Text von `exceptionReason` entfernt; nur Klassen- und Ausnahmename bleiben.
-- Der Server prüft Ereignisnamen, Zahlenschlüssel und Angaben noch einmal mit denselben Regeln und lehnt Abweichungen mit 400 ab. Das `payload` prüft er nicht inhaltlich; dort greift nur der Filter in der App.
-- Nachweise: `testPrivacyFilterDropsAnythingButFixedNamesAndCodes`, `testNoNotebookContentReachesReportsOrTheJournal` (ein Heft mit erkennbarem Titel und Text durchläuft Speichern, Fehler und Ereignisse; weder Bericht noch Journal enthalten Titel, Text oder Pfad) und `test_rejects_wrong_form_and_free_text` im Server.
+- Der Server prüft Ereignisnamen, Zahlenschlüssel und Angaben noch einmal mit denselben Regeln und lehnt Abweichungen mit 400 ab. Seit 11.11.2026 (`feat/audit-fixes`) prüft er jedes Feld des Berichts mit Typ, Länge und Zeichenvorrat; unbekannte Felder ergeben 400, Zeitstempel gelten nur von 2020 bis 2100. Das `payload` prüft er weiterhin nicht inhaltlich (dort greift nur der Filter in der App), aber auf Länge (600 000 Zeichen) und Steuerzeichen. Übertragungsformat und `formatVersion` sind unverändert.
+- Nachweise: `testPrivacyFilterDropsAnythingButFixedNamesAndCodes`, `testNoNotebookContentReachesReportsOrTheJournal` (ein Heft mit erkennbarem Titel und Text durchläuft Speichern, Fehler und Ereignisse; weder Bericht noch Journal enthalten Titel, Text oder Pfad) und `test_rejects_wrong_form_and_free_text` im Server; seit 11.11.2026 `ValidationTests` und `HardenedServerTests` (Server), `UntrustedStore` (Auswertung) und der Core-Test `testKindFixtureIsWhatTheReporterBuilds`.
 
 ## Senden
 
@@ -108,13 +108,15 @@ sudo python3 -B scripts/diag_report.py --show 3F2A        # ein Bericht, ID-Anfa
 sudo python3 -B scripts/diag_report.py --all --json       # mit Tageswerten/Tests, maschinenlesbar
 ```
 
-Root ist nötig, weil die Ablage nur für root und `noty-diag` lesbar ist. Filter: `--since` (24h, 7d, 2w, Datum, all), `--channel`, `--build`, `--kind`, jeweils mehrfach. Die Ausgabe zeigt je Gruppe Anzahl, Builds, erstes und letztes Auftreten, Muster mit Hinweis, Hänger-Kategorie (SwiftUI, PencilKit, Dateizugriff, Warten auf Sperre, Systemaufruf, App-Code; Dateizugriff und Warten nur bei belegten Namen, ein Kernel-Frame allein heißt „Systemaufruf“, weil Systemfunktionen keine Namen tragen), symbolisierte App-Frames und die Ereignisse vor dem Problem. Ein `abnormalExit` desselben Laufs wird in den zugehörigen `crash` eingefaltet.
+Root ist nötig, weil die Ablage nur für root und `noty-diag` lesbar ist. Filter: `--since` (24h, 7d, 2w, Datum, all), `--channel`, `--build`, `--kind`, jeweils mehrfach. Die Ausgabe zeigt je Gruppe Anzahl, Builds, erstes und letztes Auftreten, Muster mit Hinweis, Hänger-Kategorie (SwiftUI, PencilKit, Dateizugriff, Warten auf Sperre, Systemaufruf, App-Code; Dateizugriff und Warten nur bei belegten Namen, ein Kernel-Frame allein heißt „Systemaufruf“, weil Systemfunktionen keine Namen tragen), symbolisierte App-Frames und die Ereignisse vor dem Problem. Ein `abnormalExit` desselben Laufs wird in den zugehörigen `crash` eingefaltet. Seit 11.11.2026 traut die Auswertung der Ablage nicht mehr: Sie baut jeden Bericht aus den bekannten Feldern neu auf und meldet am Ende „N Berichte übersprungen (Felder mit falschem Typ oder falscher Form).“ und „Aus N Berichten Steuerzeichen entfernt.“; in der JSON-Ausgabe sind das die Schlüssel `malformed` und `sanitized`.
 
 Symbolisierung: `llvm-symbolizer` und `swift-demangle` aus der Swiftly-Toolchain gegen die Binärdatei, die `publish_ota.sh` je Build unter `.tools/diag-binaries/<kanal>/<build>/` ablegt (`Noty`, `info.json` mit Kanal, Build, Branch, Commit, UUID; die letzten 60 Builds je Kanal). Das gibt es nur für Builds, die mit dem neuen `publish_ota.sh` veröffentlicht wurden. Frames mit abweichender UUID werden nicht übersetzt. Ergebnis sind nur Funktionsnamen, keine Datei- und Zeilennummern: Die Binärdatei hat kein DWARF, es gibt kein dSYM.
 
 ## Offen
 
-- `LaunchGuard` (Start-Absturzschutz) liegt nur auf `feat/feinschliff`, nicht in `dev`. Nach dem Merge soll er Phasen und Ereignisse auch an `Diagnostics` melden.
+- `LaunchGuard` (Start-Absturzschutz) ist seit der Zusammenführung vom 09.11.2026 in `dev` und `main` und notiert sein Ergebnis als Ereignis `launchGuard`. Seit 11.11.2026 (`feat/audit-fixes`) zählt ein Hintergrundstart für die Kalenderaktualisierung, der nie eine Szene zeigt, nicht mehr als unterbrochener Start (`LaunchGuardStateTests`, 10 neue Tests); ein echter Absturz im sichtbaren Start, auch vor dem ersten Bild, zählt wie bisher. Am iPad ungeprüft; ob iPadOS noty tatsächlich ohne Szene startet, ist nicht belegt.
+- Eine Upload-Quote je Schlüssel fehlt weiterhin (Adresse und Build-Schlüssel stehen in jeder veröffentlichten IPA; es gilt nur die Begrenzung je IP und je Tag).
+- Einzeiliger druckbarer Freitext in `summary` bleibt Sache des Absenders: Der Server prüft Länge und Zeichenvorrat, nicht den Wortlaut.
 - MetricKit-Signpost-Metriken werden nicht genutzt.
 - Keine Datei-/Zeilennummern bei der Symbolisierung (siehe oben).
 - Messpunkt für `law.window` fehlt.

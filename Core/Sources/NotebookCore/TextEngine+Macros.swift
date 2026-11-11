@@ -168,13 +168,15 @@ extension TextEngine {
         if pair { run.typed.tail = String(run.typed.tail.dropFirst()) }
         insertRun = run
     }
-    mutating func endInsertRun() {
-        guard let run = insertRun else { return }
+    /// Ends the insert run. Returns the indent of the new line it opened if
+    /// nothing was written there; the range holds for the current text only.
+    mutating func endInsertRun() -> NSRange? {
+        guard let run = insertRun else { return nil }
         insertRun = nil
         let typed = run.native ? Self.typedText(from: run.base, to: text, start: run.start, caret: primary.head) : run.typed
         lastInsert = (run.entry, typed)
         if nested == 0 { recording?.steps.append(.typed(typed)) }
-        unusedIndent = indentLeftOver(run, typed)
+        return indentLeftOver(run, typed)
     }
     /// Helix's `try_restore_indent`: Esc takes the indent of a new line back
     /// if nothing was written on it.

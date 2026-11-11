@@ -61,8 +61,9 @@ final class EditorWorkspace: ObservableObject {
         }
         closing = true; defer { closing = false }
         if let secondary, secondary !== primary, secondaryID != document.id {
-            // A failed flush keeps the old view; the reservation ends with this call.
-            guard await secondary.flushBeforeClosing() else { reservation?.release(); return }
+            // A failed flush keeps the old view unless the user gives its
+            // changes up; the reservation ends with this call.
+            guard await flushOrAbandon(secondary) else { reservation?.release(); return }
             if let secondaryID { models.removeValue(forKey: secondaryID) }
         }
         let model: EditorModel
@@ -79,10 +80,21 @@ final class EditorWorkspace: ObservableObject {
         guard !closing else { return }
         closing = true; defer { closing = false }
         if let secondary, secondary !== primary {
-            guard await secondary.flushBeforeClosing() else { return }
+            guard await flushOrAbandon(secondary) else { return }
             if let secondaryID { models.removeValue(forKey: secondaryID) }
         }
         secondary = nil; secondaryID = nil; activePane = 0
+    }
+    /// Leaving one view (✕, „Zweite Ansicht schließen“, another notebook for
+    /// it): saved, or the save fails and the user chose to close without it.
+    /// A running operation reports itself (`flushBeforeClosing`); nothing
+    /// here ends silently.
+    private func flushOrAbandon(_ model: EditorModel) async -> Bool {
+        if await model.flushBeforeClosing() { return true }
+        guard let reason = model.closeBlocked,
+              await TopAlert.ask(Self.blockedTitle, Self.blockedMessage(reason), confirm: Self.blockedConfirm) else { return false }
+        await model.abandonUnsavedChangesWhenLeaving()
+        return true
     }
     /// Pauses the editors only until every pane and the tool settings are
     /// committed; the backup archive is then built from committed packages
@@ -112,14 +124,33 @@ final class EditorWorkspace: ObservableObject {
         "\(reason)\n\nDer zuletzt gespeicherte Stand bleibt erhalten. Beim Schließen gehen die Änderungen seitdem verloren."
     }
     static let blockedConfirm = "Ohne Speichern schließen"
-    /// Saving cannot succeed for a pane: the user may leave it anyway, then
-    /// the others close as usual.
+    /// Saving fails for a pane, whether noty still retries it or not
+    /// (`EditorClosePolicy`): the user may leave it anyway. Every failing
+    /// pane is given up with the one confirmation, and only after the others
+    /// are committed: no pane stays behind unwritable in an open workspace.
     func closeAbandoningBlockedPanes() async -> Bool {
-        let blocked = models.values.filter { $0.saveBlocked != nil }
-        guard !closing, let reason = blocked.first?.saveBlocked,
-              await TopAlert.ask(Self.blockedTitle, Self.blockedMessage(reason), confirm: Self.blockedConfirm) else { return false }
-        for model in blocked { model.abandonUnsavedChanges() }
-        return await closeAll()
+        guard !closing else { return false }
+        let all = Array(models.values)
+        guard let offer = EditorClosePolicy.abandonOffer(all.map(\.closeSaveState)) else { return false }
+        // One confirmation covers every failing notebook, so it names that.
+        let message = Self.blockedMessage(offer.reason) + (offer.panes.count > 1 ? "\n\nDas betrifft beide geöffneten Hefte." : "")
+        guard await TopAlert.ask(Self.blockedTitle, message, confirm: Self.blockedConfirm), !closing else { return false }
+        closing = true; defer { closing = false }
+        let blocked = offer.panes.map { all[$0] }
+        let kept = all.filter { model in !blocked.contains { $0 === model } }
+        for model in kept {
+            if model.busy || model.imageReading { error = "Bitte den laufenden Vorgang abwarten."; return false }
+            model.save()
+        }
+        var saved = true
+        for model in kept { if !(await model.waitForSave()) { saved = false } }
+        // A pane that fails only now is offered at the next attempt, with the others.
+        guard saved else { return false }
+        for model in blocked { await model.abandonUnsavedChangesWhenLeaving() }
+        for model in kept { model.writable = false }
+        for model in kept { await model.collectAssetGarbageAfterClosing() }
+        for model in all { model.releaseWriteClaim() }
+        return true
     }
     func closeAll() async -> Bool {
         guard !closing else { return false }
@@ -130,7 +161,11 @@ final class EditorWorkspace: ObservableObject {
             if model.busy || model.imageReading { error = "Bitte den laufenden Vorgang abwarten."; return false }
             model.save()
         }
-        for model in models.values { if !(await model.waitForSave()) { return false } }
+        // Every pane's attempt is awaited, also after a failure: the offer to
+        // close without saving must see the state of all of them.
+        var saved = true
+        for model in models.values { if !(await model.waitForSave()) { saved = false } }
+        guard saved else { return false }
         for model in models.values { model.writable = false }
         // After every pane's last commit: each package's asset GC.
         for model in models.values { await model.collectAssetGarbageAfterClosing() }
@@ -376,7 +411,7 @@ struct EditorWorkspaceView: View {
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
         let panelModel = lawPanel
-        return ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
+        return ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, offersRestoreTimeline: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
             initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, isPaneSelected: { workspace.activePane == index }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task {

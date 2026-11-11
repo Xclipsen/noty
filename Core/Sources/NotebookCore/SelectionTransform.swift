@@ -15,15 +15,31 @@ public struct SelectionTransform: Equatable, Sendable {
                                   (anchor.x - frame.x - frame.width, allowed.x + allowed.width - anchor.x),
                                   (frame.y - anchor.y, anchor.y - allowed.y),
                                   (anchor.y - frame.y - frame.height, allowed.y + allowed.height - anchor.y)] {
-            if distance < 0 { upper = min(upper, room / -distance) }
+            // Page coordinates round (339.1 + 255.9 against 595): an edge that lies
+            // on the anchor up to rounding error does not limit the scale.
+            guard distance < -Self.tolerance else { continue }
+            // `frame` lies inside `allowed`, so every edge has room for scale 1:
+            // anything below, or just above, is rounding again and must not
+            // reach font sizes and stroke widths as 0.9999999999999999.
+            let limit = room / -distance
+            upper = min(upper, limit < 1 + Self.tolerance ? 1 : limit)
         }
         let s = min(max(minimumScale, requested), max(minimumScale, upper))
+        // The same for the move: a limit missed by rounding error only keeps the requested value.
+        func held(_ wanted: Double, _ low: Double, _ high: Double) -> Double {
+            let value = max(low, min(wanted, high))
+            return abs(value - wanted) <= Self.tolerance ? wanted : value
+        }
         self = Self(scale: s, anchor: anchor, translation: .init(
-            x: max(allowed.x - (anchor.x + (frame.x - anchor.x) * s),
-                   min(translation.x, allowed.x + allowed.width - (anchor.x + (frame.x + frame.width - anchor.x) * s))),
-            y: max(allowed.y - (anchor.y + (frame.y - anchor.y) * s),
-                   min(translation.y, allowed.y + allowed.height - (anchor.y + (frame.y + frame.height - anchor.y) * s)))))
+            x: held(translation.x, allowed.x - (anchor.x + (frame.x - anchor.x) * s),
+                    allowed.x + allowed.width - (anchor.x + (frame.x + frame.width - anchor.x) * s)),
+            y: held(translation.y, allowed.y - (anchor.y + (frame.y - anchor.y) * s),
+                    allowed.y + allowed.height - (anchor.y + (frame.y + frame.height - anchor.y) * s))))
     }
+    /// Page units and scale ratio: far above the rounding error of page
+    /// coordinates (about 1e-13), far below the 0.01 the objects' own page
+    /// checks allow (`TextBox.fits`, `ImageObject.fits`).
+    private static let tolerance = 1e-6
     private init(scale: Double, anchor: PagePoint, translation: PagePoint) {
         self.scale = scale; self.anchor = anchor; self.translation = translation
     }

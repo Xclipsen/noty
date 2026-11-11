@@ -9,6 +9,9 @@ struct ContentView: View {
     @ObservedObject var model: EditorModel
     var isRestoredCopy = false
     var isLibraryDocument = false
+    /// The library's own editor (EditorWorkspace): „Älteren Stand wiederherstellen …“
+    /// closes it and shows the timeline. Calendar notes keep the old local copies.
+    var offersRestoreTimeline = false
     var initialSearchBounds: PageRect? = nil
     /// A search hit over a page change: marked in the flow once the document stands.
     var initialFlowRange: NSRange? = nil
@@ -489,7 +492,9 @@ struct ContentView: View {
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
         var items = [PaletteCommand(title: "Vollständiges Backup") { exportBackup() },
-                     PaletteCommand(title: "Lokale Wiederherstellungspunkte") { showingHistory = true },
+                     PaletteCommand(title: offersRestoreTimeline ? "Älteren Stand wiederherstellen" : "Lokale Wiederherstellungspunkte") {
+                         if offersRestoreTimeline { showRestoreTimeline() } else { showingHistory = true }
+                     },
                      PaletteCommand(title: "Speichern", keys: ":w") { model.save() },
                      PaletteCommand(title: "Blättern statt Scrollen umschalten") { toolbox.preferences.paging = !(toolbox.preferences.paging ?? false) },
                      PaletteCommand(title: "Schreibmaschinen-Modus umschalten") { TextObjectLayer.typewriterEnabled.toggle() },
@@ -610,13 +615,20 @@ struct ContentView: View {
         }
     }
 
+    /// Closes the notebook; the library then shows its timeline (`RestoreRouter`).
+    private func showRestoreTimeline() {
+        RestoreRouter.shared.requestTimeline(model.notebook.id)
+        closeEditor()
+    }
+
     private func closeEditor() {
         WorksheetView.settleHeldStrokes() // a held stroke right before closing is saved
         if let onCloseWorkspace { onCloseWorkspace(); return }
         Task {
             if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss(); return }
-            if let reason = model.saveBlocked, await TopAlert.ask(EditorWorkspace.blockedTitle, EditorWorkspace.blockedMessage(reason), confirm: EditorWorkspace.blockedConfirm) {
-                model.abandonUnsavedChanges(); _ = await toolbox.flush(); dismiss(); return
+            // Any failing save, also one noty still retries: the user may leave.
+            if let reason = model.closeBlocked, await TopAlert.ask(EditorWorkspace.blockedTitle, EditorWorkspace.blockedMessage(reason), confirm: EditorWorkspace.blockedConfirm) {
+                await model.abandonUnsavedChangesWhenLeaving(); _ = await toolbox.flush(); dismiss(); return
             }
             // Stays open: `Space f` must not fire at some later close.
             KeyboardRouter.shared.searchAllAfterClosing = false
@@ -1056,8 +1068,14 @@ struct ContentView: View {
                     Button("Papier ändern …", systemImage: "squareshape.split.3x3") { editingDefaults = true }
                         .disabled(!canEdit)
                 }
-                Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
-                    .disabled(!model.writable)
+                if offersRestoreTimeline {
+                    // Phase 2: the notebook closes, its timeline opens in the library (copy or replace, no separate copies).
+                    Button("Älteren Stand wiederherstellen …", systemImage: "clock.arrow.circlepath") { showRestoreTimeline() }
+                        .disabled(!model.writable)
+                } else {
+                    Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                        .disabled(!model.writable)
+                }
             }
             if editorSettings != nil {
                 Section {

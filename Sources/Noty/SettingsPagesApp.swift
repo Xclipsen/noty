@@ -233,7 +233,7 @@ struct DeveloperSettingsPage: View {
         Form {
             Section {
                 NavigationLink {
-                    WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()
+                    WorkspacePickerList(model: workspaces, onSelect: onSelectArea, library: library).keyboardSheet()
                 } label: {
                     LabeledContent("Bereiche", value: workspaces.title)
                 }
@@ -269,7 +269,7 @@ struct DeveloperSettingsPage: View {
             }
         }
         .navigationTitle(SettingsPage.developer.title)
-        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet() }
+        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea, library: library).keyboardSheet() }
         .keyboardSheet()
     }
 }

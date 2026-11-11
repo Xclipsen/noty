@@ -78,6 +78,19 @@ public actor NotebookRepository {
         return try prepareStaged { input in try BackupArchive.write(decoded.notebook, assets: assets, to: input).file }
     }
 
+    /// A local state as a verified `.notybackup` file titled `title`, for the
+    /// library's staged import (copy or „Aktuellen Stand ersetzen“,
+    /// BACKUP-RESTORE-PLAN Phase 2). Read-only on this package: the revision
+    /// files are immutable, nothing is staged or committed here.
+    public func exportLocalRevision(id: UUID, title: String, to url: URL) throws {
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        let decoded = try store.localRevision(id: id)
+        let assets = ChainedImageAssets([decoded.inlineAssets, store.assets])
+        var document = decoded.notebook
+        document.title = try LibraryStore.validTitle(title)
+        _ = try BackupArchive.write(document, assets: assets, to: url)
+    }
+
     private var stagingRoot: URL { store.directory.appendingPathComponent("BackupStaging", isDirectory: true) }
 
     /// Stages of failed imports stay for analysis, but not for ever: they can
@@ -160,6 +173,10 @@ public actor NotebookRepository {
         return try commitRestore(prepared, title: NotebookTitles.unique(prepared.document.title, taken: taken))
     }
 
+    /// Test hook: commit faults of the package `commitRestore` writes.
+    var restoreCommitFault: @Sendable (RevisionStore.CommitStage) throws -> Void = { _ in }
+    func setRestoreCommitFault(_ fault: @escaping @Sendable (RevisionStore.CommitStage) throws -> Void) { restoreCommitFault = fault }
+
     /// Call only after the UI actor validates PDFKit/PencilKit contents of the
     /// prepared document. The current store and its revision counter never change.
     /// The stage is checked again first: the archive's exact size and CRC (one
@@ -189,9 +206,14 @@ public actor NotebookRepository {
         }
         let parent = collection ?? restoreDirectory
         let destination = parent.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
-        guard !fm.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
+        // A failed commit removes what it created, so the same stage can be
+        // committed again; rests without content of an attempt that was
+        // killed are no package either (`PackageShell`).
+        guard !fm.fileExists(atPath: destination.path) || PackageShell.isShell(destination) else { throw BackupError.invalidStaging }
         if collection != nil { try fm.createDirectory(at: parent, withIntermediateDirectories: true) }
-        try RevisionStore(directory: destination).save(copy, importingAssetsFrom: staged)
+        let target = RevisionStore(directory: destination)
+        target.commitFault = restoreCommitFault
+        try target.save(copy, importingAssetsFrom: staged)
         let reopened = RevisionStore(directory: destination, readOnly: true)
         guard try reopened.load() == copy, reopened.assets.presentOnDisk(copy.externalImageAssets) else {
             throw BackupError.invalidStaging
@@ -217,6 +239,8 @@ public actor NotebookRepository {
                 let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 guard values.isDirectory == true, values.isSymbolicLink != true else { throw BackupError.invalidStaging }
                 let stamp = Self.manifestStamp(directory)
+                // Rests without content of an aborted commit are no copy.
+                if stamp == nil, PackageShell.isShell(directory) { continue }
                 if let stamp, let cached = catalogCache[directory.path], cached.stamp == stamp {
                     catalog.notebooks.append(cached.entry); cache[directory.path] = cached; continue
                 }

@@ -20,6 +20,20 @@ diag = importlib.util.module_from_spec(spec)
 sys.modules["diag_report"] = diag
 spec.loader.exec_module(diag)
 
+
+
+def load(name: str, path: Path):
+    module_spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(module_spec)
+    sys.modules[name] = module
+    module_spec.loader.exec_module(module)
+    return module
+
+
+# The receiving service and its sample reports: what it accepts must render here.
+samples = load("diag_test_server", HERE.parent / "diagnostics" / "test_server.py")
+server = samples.server
+
 TEST_BINARY = HERE.parent / "xtool" / "Noty.app" / "Noty"
 NOW = int(time.time() * 1000)
 HOUR = 3600 * 1000
@@ -232,6 +246,218 @@ class SyntheticStore(unittest.TestCase):
         self.assertEqual(diag.pattern_of(base), "stackOverflow")
         self.assertEqual(diag.pattern_of(make_report("memory", 1)), "memoryLimit")
         self.assertIsNone(diag.pattern_of(make_report("slow", 1, details={"signal": "6"})))
+
+
+ESC = "\x1b"
+EVIL_ID = "11111111-1111-4111-8111-111111111111"
+GOOD_ID = "88888888-8888-4888-8888-888888888888"
+
+
+def unprintable(text: str) -> list[str]:
+    """Everything in an output that could steer a terminal: only line feeds between lines may remain."""
+    return sorted({repr(ch) for ch in text if ch != "\n" and not ch.isprintable()})
+
+
+class UntrustedStore(unittest.TestCase):
+    """The store is not trusted: the upload key is in every published app, and
+    the service checked much less before. Hostile files are written directly,
+    the way the earlier service stored them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="diag-untrusted-")
+        self.store = Path(self.tmp.name) / "reports"
+        self.good = make_report("hang", 149, channel="stable", details={"durationMs": "2100"}, rid=GOOD_ID,
+                                stack=[{"image": "UIKitCore", "offset": 16}, {"image": "Noty", "offset": 32}])
+        write(self.store, self.good)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_ok(self, *argv):
+        code, text = run("--store", str(self.store), "--binaries", str(Path(self.tmp.name) / "none"), *argv)
+        self.assertEqual(code, 0)
+        text.encode("utf-8")  # unpaired surrogates would fail here, as on a real terminal
+        self.assertEqual(unprintable(text), [], argv)
+        return text
+
+    @staticmethod
+    def put(store: Path, report: dict) -> None:
+        """Into a fixed folder: channel and build of these reports are not fit for a path."""
+        folder = store / "stable" / "149"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"20261111T000000-cpu-{uuid.uuid4()}.json").write_text(json.dumps(report))
+
+    def evil(self):
+        return make_report(
+            "cpu", "149\n", channel="stable", rid=EVIL_ID,
+            summary="Absturz beim Start\n    Typische Ursache: FREMDTEXT-ZEILE-2 " + ESC + "[2J" + ESC + "]0;FREMDTITEL\x07\x9b31m\x7f",
+            phase="library\r\n[9] FREMDE-GRUPPE", signature="cpu\n[7] FREMDSIGNATUR X‮Y",
+            launch="FREMDSTART\nZeit: 01.01.2020", details={"note\nAngaben: FREMD": "x\n  FREMDANGABE = 1" + ESC + "[0m"},
+            stack=[{"image": "UIKitCore" + ESC + "[31mROT\nApp-Frames: FREMD", "offset": 16, "uuid": "AB\nCD"}],
+            crumbs=[{"t": NOW - 500, "e": "notebook.open\n      +0.0 s FREMDSCHRITT", "v": {"pages\nFREMD": 1}}])
+
+    def write_evil(self):
+        report = self.evil()
+        report["app"].update(version="1.0\nFREMDVERSION", commit="abc" + ESC + "[5m", bundleID="de.la\nFREMD")
+        report["device"] = {"model": "iPad\nFREMDZEILE", "os": "x" + ESC + "c"}
+        write(self.store, report)
+        return report
+
+    def test_control_characters_never_reach_the_overview(self):
+        self.write_evil()
+        text = self.run_ok("--since", "all")
+        lines = text.splitlines()
+        self.assertEqual(len([line for line in lines if line.startswith("[")]), 2, text)  # two groups, no forged third
+        self.assertFalse(any(line.lstrip().startswith(("Typische Ursache: FREMD", "[9]", "[7]", "App-Frames: FREMD",
+                                                        "FREMD", "+0.0 s FREMD")) for line in lines), text)
+        # The text itself stays visible, inside the line of its own field.
+        heading = next(line for line in lines if "FREMDTEXT-ZEILE-2" in line)
+        self.assertTrue(heading.startswith("[") and "Absturz beim Start" in heading, heading)
+        self.assertTrue(next(line for line in lines if "FREMDE-GRUPPE" in line).lstrip().startswith("Zuerst:"))
+        self.assertTrue(next(line for line in lines if "ROT" in line).lstrip().startswith("System oben:"))
+        self.assertTrue(next(line for line in lines if "FREMDSCHRITT" in line).lstrip().startswith("-0.5 s notebook.open"))
+        self.assertIn("Aus 1 Bericht Steuerzeichen entfernt", text)
+        # The default call (14 days) and the hidden kinds take the same path.
+        self.run_ok()
+        self.run_ok("--all", "--since", "all")
+
+    def test_control_characters_never_reach_a_single_report(self):
+        self.write_evil()
+        text = self.run_ok("--show", "1111")
+        lines = text.splitlines()
+        for needle, start in [("FREMDTEXT-ZEILE-2", "Absturz beim Start"), ("FREMDVERSION", "App:"), ("FREMDZEILE", "Gerät:"),
+                              ("FREMDSTART", "Start:"), ("FREMDE-GRUPPE", "Start:"), ("FREMDSIGNATUR", "Signatur:"),
+                              ("FREMDANGABE", "  note"), ("ROT", "    0"), ("FREMDSCHRITT", "  -0.5 s")]:
+            found = [line for line in lines if needle in line]
+            self.assertTrue(found and all(line.startswith(start) or line.startswith("Zusammenfassung:") for line in found),
+                            (needle, found))
+        path_lines = [line for line in lines if line.startswith("Datei:")]
+        self.assertEqual(len(path_lines), 1)
+        self.assertTrue(path_lines[0].endswith(".json"), path_lines[0])  # the folder "149\n" does not break the line
+
+    def test_json_stays_valid_and_clean(self):
+        self.write_evil()
+        for argv in (("--json", "--since", "all"), ("--json", "--show", "1111"), ("--json", "--all", "--since", "all")):
+            text = self.run_ok(*argv)
+            data = json.loads(text)
+            # Nothing is left for a later print either: no control character in any key or value.
+            self.assertEqual(unprintable(json.dumps(data, ensure_ascii=False)), [], argv)
+            self.assertNotIn("\\u001b", json.dumps(data))
+        data = json.loads(self.run_ok("--json", "--since", "all"))
+        self.assertEqual((data["malformed"], data["sanitized"], data["skipped"]), (0, 1, 0))
+        self.assertEqual(sorted(g["kind"] for g in data["groups"]), ["cpu", "hang"])
+
+    def test_wrong_types_are_skipped_and_counted_not_fatal(self):
+        def variant(**changes):
+            report = make_report("cpu", 149, channel="stable")
+            for key, value in changes.items():
+                target, _, leaf = key.rpartition("__")
+                holder = report
+                for part in filter(None, target.split("__")):
+                    holder = holder[int(part) if part.isdigit() else part]
+                holder[int(leaf) if leaf.isdigit() else leaf] = value
+            return report
+
+        frame, crumb = {"image": "Noty", "offset": 16}, {"t": NOW - 100, "e": "x"}
+        cases = {
+            "launchID object": variant(launchID={"a": 1}), "launchID list": variant(launchID=["a"]),
+            "launchPhase object": variant(launchPhase={"a": 1}), "launchPhase number": variant(launchPhase=7),
+            "occurredAt text": variant(occurredAt="x"), "occurredAt huge": variant(occurredAt=10 ** 400),
+            "occurredAt float": variant(occurredAt=1e300), "occurredAt negative": variant(occurredAt=-10 ** 15),
+            "occurredAt bool": variant(occurredAt=True), "createdAt bool": variant(createdAt=True),
+            "createdAt far": variant(createdAt=10 ** 15), "summary number": variant(summary=5),
+            "summary list": variant(summary=["a"]), "summary too long": variant(summary="A" * 200_000),
+            "signature object": variant(signature={"a": 1}), "details list": variant(details=["a"]),
+            "details value object": variant(details={"durationMs": {"a": 1}}), "details value number": variant(details={"a": 1}),
+            "device text": variant(device="iPad"), "device model list": variant(device={"model": ["iPad"]}),
+            "app build number": variant(app__build=149), "app channel path": variant(app__channel="../../etc"),
+            "app version object": variant(app__version={"a": 1}), "id newline": variant(id=str(uuid.uuid4()).upper() + "\n"),
+            "id free text": variant(id="FREMD-ID"), "stack object": variant(callStack={"a": 1}),
+            "frame text": variant(callStack=["Noty+0x10"]), "frame offset text": variant(callStack=[dict(frame, offset="16")]),
+            "frame offset negative": variant(callStack=[dict(frame, offset=-1)]),
+            "frame offset huge": variant(callStack=[dict(frame, offset=10 ** 400)]),
+            "frame image object": variant(callStack=[dict(frame, image={"a": 1})]),
+            "frame uuid list": variant(callStack=[dict(frame, uuid=["a"])]),
+            "crumbs object": variant(breadcrumbs={"a": 1}), "crumb text": variant(breadcrumbs=["x"]),
+            "crumb time huge": variant(breadcrumbs=[dict(crumb, t=10 ** 400)]),
+            "crumb time text": variant(breadcrumbs=[dict(crumb, t="x")]),
+            "crumb name object": variant(breadcrumbs=[dict(crumb, e={"a": 1})]),
+            "crumb value huge": variant(breadcrumbs=[dict(crumb, v={"n": 10 ** 400})]),
+            "crumb value text": variant(breadcrumbs=[dict(crumb, v={"n": "x"})]),
+            "crumb values list": variant(breadcrumbs=[dict(crumb, v=[1])]), "payload object": variant(payload={"a": 1}),
+            "crash launchID object": dict(variant(launchID={"a": 1}), kind="crash"),
+            "exit launchID object": dict(variant(launchID={"a": 1}), kind="abnormalExit"),
+        }
+        for label, report in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory(prefix="diag-one-") as tmp:
+                store = Path(tmp) / "reports"
+                write(store, self.good)
+                self.put(store, report)
+                for argv in ((), ("--since", "all"), ("--json",), ("--show", GOOD_ID[:8]), ("--show", report["id"][:8].strip())):
+                    try:
+                        code, text = run("--store", str(store), "--binaries", str(Path(tmp) / "none"), *argv)
+                    except Exception as error:  # the defect: one file ended every call
+                        self.fail(f"{argv}: {type(error).__name__}: {str(error)[:80]}")
+                    self.assertEqual(unprintable(text), [])
+                self.assertEqual(code, 1, "the malformed report is not shown")
+                self.assertIn("1 Bericht übersprungen", text)
+                data = json.loads(run("--store", str(store), "--binaries", str(Path(tmp) / "none"), "--json")[1])
+                self.assertEqual((data["malformed"], len(data["groups"]), data["groups"][0]["reportIDs"]), (1, 1, [GOOD_ID]))
+        # All of them in one store: counted in the first lines, the good report still listed.
+        for report in cases.values():
+            self.put(self.store, report)
+        text = self.run_ok()
+        self.assertIn(f"{len(cases)} Berichte übersprungen (Felder mit falschem Typ oder falscher Form)", text)
+        self.assertIn("1 Berichte in 1 Gruppen", text)
+
+    def test_unknown_fields_are_not_printed(self):
+        report = make_report("cpu", 149, channel="stable", rid=EVIL_ID)
+        report.update(note="FREMDFELD", extra={"a": ["FREMDFELD"]})
+        report["app"]["name"] = "FREMDFELD"
+        report["device"]["udid"] = "FREMDFELD"
+        write(self.store, report)
+        for argv in (("--since", "all"), ("--show", "1111"), ("--show", "1111", "--json"), ("--json",)):
+            self.assertNotIn("FREMDFELD", self.run_ok(*argv), argv)
+
+    def test_accepted_reports_render(self):
+        """Fixture, every kind and the largest report: accepted by the service, stored by it, shown here."""
+        fixture = (HERE.parent / "diagnostics" / "fixtures" / "report-v1.json").read_bytes()
+        big = samples.maximal_report()
+        bodies = [fixture] + [json.dumps(item, ensure_ascii=False).encode()
+                              for item in samples.reporter_fixture() + samples.swift_reports() + [big]]
+        target = server.Store(Path(self.tmp.name) / "accepted", 90)
+        for body in bodies:
+            target.save(server.validate(json.loads(body.decode("utf-8"))), body)
+        argv = ("--store", str(target.root), "--binaries", str(Path(self.tmp.name) / "none"), "--since", "all", "--all")
+        code, text = run(*argv, "--json")
+        data = json.loads(text)
+        self.assertEqual((code, data["skipped"], data["malformed"], data["sanitized"]), (0, 0, 0, 0))
+        # The reporter fixture's unexpected exit belongs to the run of its crashes and is folded into them.
+        self.assertEqual(sum(g["count"] for g in data["groups"]), len(bodies) - 1)
+        self.assertEqual(max(g["abnormalExits"] for g in data["groups"] if g["kind"] == "crash"), 1)
+        self.assertEqual(sorted({g["kind"] for g in data["groups"]}), sorted(diag.KINDS))
+        overflow = [g for g in data["groups"] if g["headline"] == "Stapelüberlauf beim View-Aufbau (SwiftUI)"]
+        self.assertEqual(sorted(g["newestReport"] for g in overflow), sorted([big["id"], "6F1A2B3C-4D5E-4F60-8172-93A4B5C6D7E8"]))
+        code, text = run(*argv)
+        self.assertEqual((code, unprintable(text)), (0, []))
+        self.assertIn(f"{len(bodies) - 1} Berichte in", text)
+        self.assertNotIn("übersprungen", text)
+        self.assertNotIn("Steuerzeichen", text)
+        memory = next(g for g in data["groups"] if g["kind"] == "memory")
+        self.assertIn("Zusammenfassung: Speicherlimit · 2× vom System", run(*argv, "--show", memory["newestReport"])[1])
+        code, text = run(*argv, "--show", big["id"])
+        self.assertEqual((code, unprintable(text)), (0, []))
+        self.assertIn("Aufrufkette (512 Frames, innen zuerst):", text)
+        self.assertIn("Schritte vor dem Problem (200):", text)
+        self.assertIn("MetricKit-Rohdaten: 600000 Zeichen", text)
+        self.assertRegex(text, r"Rekursion: Noty\+0x1a91ac.* \(440× auf dem Stapel\)")
+        self.assertIn("index=199 ms=9000000000000 pages=-1", text)
+        code, text = run(*argv, "--show", "6F1A2B3C", "--json")
+        shown = json.loads(text)
+        self.assertEqual((shown["launchPhase"], shown["device"], shown["payloadBytes"]),
+                         ("lawWindow", {"model": "iPad16,3", "os": "iPadOS 18.1"}, 0))
+        self.assertEqual(shown["summary"], json.loads(fixture)["summary"])
+        self.assertEqual(len(shown["breadcrumbs"]), 3)
 
 
 def nm_address(symbol: str) -> int | None:

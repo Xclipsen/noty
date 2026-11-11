@@ -369,6 +369,36 @@ public actor CalendarRepository {
         return CalendarLoad(state: state, recovered: store.recovered)
     }
 
+    /// Pauses (seconds) between the load attempts of the calendar model:
+    /// together they outlast a timetable request of an earlier owner that is
+    /// still running (60 s at most).
+    public static let busyRetryDelays: [Double] = [1, 2, 4, 8, 15, 30]
+
+    /// `load()`, tried again after each of `delays` while the write claim is
+    /// still held elsewhere (`busy`): after switching back to an area
+    /// (A → B → A) the owner of the earlier visit may not have let go yet.
+    /// That passes by itself and must not lock the calendar for the session.
+    /// Every other failure (unreadable package, newer format) is thrown at
+    /// once – those stay locked. `close()` meanwhile ends the attempts with
+    /// `busy`: this repository was given up, it must not take the claim later.
+    public func load(retryingBusyAfter delays: [Double]) async throws -> CalendarLoad {
+        let closed = closings
+        var attempt = 0
+        while true {
+            do { return try await load() }
+            catch CalendarStoreError.busy {
+                guard closed == closings, attempt < delays.count else { throw CalendarStoreError.busy }
+                // In short steps: `close()` ends the pause as well (a cancelled task throws).
+                let end = Date().addingTimeInterval(delays[attempt])
+                while closed == closings, Date() < end {
+                    try await Task.sleep(nanoseconds: UInt64(min(0.1, max(0.001, end.timeIntervalSinceNow)) * 1_000_000_000))
+                }
+                attempt += 1
+                guard closed == closings else { throw CalendarStoreError.busy }
+            }
+        }
+    }
+
     /// Commits `state` unless a newer `revision` was already committed (an
     /// older queued autosave never replaces a newer one). True: committed or
     /// already current; false: skipped as older.

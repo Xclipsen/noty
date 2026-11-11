@@ -54,13 +54,13 @@ struct ExternalBackupForm: View {
                         LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
                 }
-                Stepper("\(model.policy.keep) automatische Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
+                Stepper("Die neuesten \(model.policy.keep) Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
                 Button("Automatisches Backup ausschalten …", role: .destructive) { confirmingDisable = true }
                     .disabled(model.policy.target == .disabled)
             } header: {
                 Text(workspaces.areaID == nil ? "Aktives Ziel" : "Aktives Ziel · Bereich \(NotyText.quoted(workspaces.title))").lineLimit(2).truncationMode(.middle)
             } footer: {
-                Text("Einmal am Tag, solange noty benutzt wird. Nach Fehlern folgen weitere Versuche nach 15 Minuten, 1, 4 und 12 Stunden.")
+                Text("Einmal am Tag, solange noty benutzt wird. Nach Fehlern folgen weitere Versuche nach 15 Minuten, 1, 4 und 12 Stunden. Außer den neuesten bleibt gestaffelt je ein Backup der letzten 7 Tage, 4 Wochen und 6 Monate, damit sich auch ein vor Wochen gelöschtes Heft zurückholen lässt.")
             }
             Section("Backup-Ordner (Dateien, iCloud Drive)") {
                 Button(model.policy.target == .folder ? "Anderen Backup-Ordner wählen …" : "Backup-Ordner wählen …") { folderPicker = true }
@@ -68,7 +68,7 @@ struct ExternalBackupForm: View {
             Section {
                 TextField("HTTPS-Adresse des vorhandenen Ordners", text: $endpoint).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 TextField("Benutzername", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField(model.hasStoredCredentials ? "Gespeichert – leer lassen zum Beibehalten" : "Passwort / App-Passwort", text: $password)
+                SecureField(model.keepsStoredPassword(for: endpoint) ? "Gespeichert – leer lassen zum Beibehalten" : "Passwort / App-Passwort", text: $password)
                 Button("WebDAV als aktives Ziel speichern") {
                     model.useWebDAV(endpoint: endpoint, username: username, password: password); password = ""
                 }
@@ -76,7 +76,7 @@ struct ExternalBackupForm: View {
                     Button("Zugangsdaten entfernen …", role: .destructive) { confirmingRemoval = true }
                 }
             } header: { Text("WebDAV") } footer: {
-                Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort.")
+                Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort, solange die Adresse beim selben Server bleibt; für einen anderen Server bitte neu eingeben.")
             }
             if showsSigning { SigningRenewalSection() }
         }

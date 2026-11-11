@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import OSLog
 import NotebookCore
 
@@ -57,7 +58,8 @@ final class LaunchGuard: ObservableObject {
     /// A phase was reached (library ready, notebook opened, law window shown).
     func enter(_ phase: LaunchPhase) {
         let rearmed = state.enter(phase)
-        guard state.inProgress else { return }
+        // Set aside (background launch): the stored values are the run before.
+        guard state.inProgress, !state.setAside else { return }
         Self.persist(state)
         Self.log.notice("[launch] phase=\(phase.rawValue, privacy: .public)\(rearmed ? " (armed again)" : "", privacy: .public)")
         if rearmed { scheduleFinish() }
@@ -66,6 +68,12 @@ final class LaunchGuard: ObservableObject {
     /// `NotyApp`'s scene phase: active for a while or a clean background
     /// finishes the run.
     func scenePhaseChanged(_ phase: ScenePhase) {
+        // A scene in the foreground: a run set aside as a background launch
+        // is a start the user sees from here on.
+        if phase != .background, state.foreground() {
+            Self.persist(state)
+            Self.log.notice("[launch] shown after a background launch (armed again)")
+        }
         switch phase {
         case .active:
             Self.log.notice("[launch] scene active")
@@ -74,6 +82,21 @@ final class LaunchGuard: ObservableObject {
             finish(reason: "background")
         default: break
         }
+    }
+
+    /// The calendar's background refresh starts (`NotyApp`, `.backgroundTask`).
+    /// In a process iPadOS launched for it that has shown no scene, this run
+    /// is no start the user saw: it is set aside, so the suspended process
+    /// ending later is not counted as interrupted, and the verdict about the
+    /// run before stays for the next real start. Nothing changes for a
+    /// process the user had opened. Not decided in `didFinishLaunching`: with
+    /// scenes the application state there is no reliable sign of a
+    /// background launch, and a wrong guess would disarm a real start.
+    func backgroundRefreshBegan() {
+        guard UIApplication.shared.applicationState == .background, state.backgroundLaunch() else { return }
+        finishWork?.cancel(); finishWork = nil
+        Self.persist(state)
+        Self.log.notice("[launch] background launch without a shown scene: not counted")
     }
 
     /// „Normal neu starten“: only clears the guard; the user restarts the app.
@@ -99,7 +122,7 @@ final class LaunchGuard: ObservableObject {
 
     private func finish(reason: String) {
         finishWork?.cancel(); finishWork = nil
-        guard state.inProgress else { return }
+        guard state.inProgress, !state.setAside else { return }
         state.finish()
         Self.persist(state)
         Self.log.notice("[launch] finished (\(reason, privacy: .public))")

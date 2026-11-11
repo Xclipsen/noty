@@ -10,7 +10,10 @@ copies and restores them after the build):
     the URL scheme of the app (deep link of tile and widget; `noty` for the
     normal noty, `notycalendar` for noty calendar, as SchoolDayLink.scheme),
   - NotyCalendarWidgets.plist: CFBundleVersion/CFBundleShortVersionString of the app
-    (iPadOS expects the extension's numbers to match the app).
+    (iPadOS expects the extension's numbers to match the app), and NotyChannel with
+    the matching CFBundleDisplayName: the extension reads its own plist, and the
+    channel decides which widget file it shows, which app its links open and
+    which app its texts name (SchoolDayWidgetStore.channel).
 
 Usage: python3 -I scripts/calendar_build.py [PROJECT_ROOT]
 Idempotent; prints what it set.
@@ -18,6 +21,8 @@ Idempotent; prints what it set.
 import os, plistlib, re, sys
 
 CHANNELS = ("stable", "calendar")
+# Home-screen names, as APP_NAME in publish_ota.sh and SchoolDayText.appName(channel:).
+APP_NAMES = {"stable": "noty", "calendar": "noty calendar"}
 
 EXTENSION = """extensions:
 - product: NotyCalendarWidgets
@@ -69,7 +74,11 @@ def main(root):
     for key in ("CFBundleVersion", "CFBundleShortVersionString"):
         widget, count = re.subn(rf"(<key>{key}</key><string>)[^<]*(</string>)", rf"\g<1>{info[key]}\g<2>", widget)
         if count != 1: raise SystemExit(f"{key} in NotyCalendarWidgets.plist nicht gefunden")
-    plistlib.loads(widget.encode())
+    for key, value in (("NotyChannel", channel), ("CFBundleDisplayName", APP_NAMES[channel])):
+        widget, count = re.subn(rf"(<key>{key}</key><string>)[^<]*(</string>)", rf"\g<1>{value}\g<2>", widget)
+        if count != 1: raise SystemExit(f"{key} in NotyCalendarWidgets.plist nicht gefunden")
+    if plistlib.loads(widget.encode()).get("NotyChannel") != channel:
+        raise SystemExit("NotyChannel in NotyCalendarWidgets.plist nicht gesetzt")
     with open(widget_path, "w", encoding="utf-8") as handle: handle.write(widget)
     print(f"{channel}: Extension NotyCalendarWidgets, Live Activities, Schema {scheme(channel)}, Build {info['CFBundleVersion']}")
 

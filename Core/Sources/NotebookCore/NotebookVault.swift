@@ -199,7 +199,10 @@ public enum NotebookVault {
     /// changed since its newest version (and whose newest version is at
     /// least `minimumInterval` old) is archived, copied into
     /// `Versions/<id>/` and read back; the head is written after every
-    /// upload, older versions are pruned by `VaultRetention`. `scratch`: an
+    /// upload. `VaultRetention` prunes the older versions of every active
+    /// notebook on each pass, also without an upload (unchanged, waiting or
+    /// failed), so a notebook that is no longer edited does not keep all its
+    /// versions; notebooks that left the library keep theirs. `scratch`: an
     /// existing local folder for the intermediate archives.
     public static func run(plan: LibraryBackupPlan, root: URL, head existing: VaultHead?, device: UUID, deviceName: String,
                            scratch: URL, minimumInterval: TimeInterval, now: Date = Date(), calendar: Calendar = .current,
@@ -218,10 +221,17 @@ public enum NotebookVault {
             if let found = index, head.notebooks[found].title != item.title || head.notebooks[found].isTextDocument != item.isTextDocument {
                 head.notebooks[found].title = item.title; head.notebooks[found].isTextDocument = item.isTextDocument; headChanged = true
             }
-            if let found = index, let latest = head.notebooks[found].versions.first {
-                if latest.source == candidate.stamp { report.unchanged += 1; continue }
-                if now.timeIntervalSince(latest.savedAt) < minimumInterval, now >= latest.savedAt { report.waiting += 1; continue }
+            // Retention without an upload; the final head write records it.
+            func pruneExisting() {
+                guard let found = head.notebooks.firstIndex(where: { $0.id == item.id }) else { return }
+                let removed = prune(&head.notebooks[found], root: root, now: now, calendar: calendar, coordination: coordination)
+                if removed > 0 { report.removedVersions += removed; headChanged = true }
             }
+            if let found = index, let latest = head.notebooks[found].versions.first {
+                if latest.source == candidate.stamp { report.unchanged += 1; pruneExisting(); continue }
+                if now.timeIntervalSince(latest.savedAt) < minimumInterval, now >= latest.savedAt { report.waiting += 1; pruneExisting(); continue }
+            }
+            var pruned = false
             let local = scratch.appendingPathComponent(UUID().uuidString + ".notybackup")
             defer { try? FileManager.default.removeItem(at: local) }
             do {
@@ -241,6 +251,7 @@ public enum NotebookVault {
                 head.notebooks[index!].versions.insert(version, at: 0)
                 report.uploaded.append(item.title)
                 report.removedVersions += prune(&head.notebooks[index!], root: root, now: now, calendar: calendar, coordination: coordination)
+                pruned = true
                 head.updatedAt = now
                 // The version is in place: if writing the head fails now, the
                 // final write below records it.
@@ -249,6 +260,7 @@ public enum NotebookVault {
                 headChanged = false
             } catch {
                 report.failed.append(item.title)
+                if !pruned { pruneExisting() }
             }
         }
         if headChanged || head.library != existing?.library {

@@ -447,6 +447,21 @@ extension CalendarNotificationLog {
         return add(kept, now: now)
     }
 
+    /// The stored history with the entries that arrived before it was read
+    /// (a notification shown or tapped while the calendar was still
+    /// starting): what is stored stays as it is – entries, order, read
+    /// state – and only entries it does not know yet are added
+    /// (`addChanges`). Such entries must never be written on their own:
+    /// that would replace the stored history. `added`: the new entries;
+    /// empty when there is nothing to write.
+    public static func merging(stored: CalendarNotificationLog, early: [CalendarNotificationRecord],
+                               now: Date) -> (log: CalendarNotificationLog, added: [CalendarNotificationRecord]) {
+        guard !early.isEmpty else { return (stored, []) }
+        var log = stored
+        let added = log.addChanges(early, now: now)
+        return added.isEmpty ? (stored, []) : (log, added)
+    }
+
     /// `id` and the entries of the other origin that say the same: read together.
     public func relatedChangeIDs(_ id: String) -> [String] {
         guard let key = Self.changeMatchKey(id) else { return [id] }

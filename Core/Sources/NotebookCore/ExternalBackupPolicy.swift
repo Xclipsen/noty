@@ -24,9 +24,19 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
     public var consecutiveFailures: Int?
     /// Warning of the last success, e.g. a notebook archived in an older readable state.
     public var lastWarning: String?
+    /// Gestaffelte Aufbewahrung (BACKUP-RESTORE-PLAN Phase 3): besides the
+    /// `keep` newest, the newest backup of each of the last 7 days, of each of
+    /// the last `keepWeeks` weeks and of each of the last `keepMonths` months.
+    /// Optional, so older builds keep decoding the policy (they keep `keep`).
+    public var keepWeeks: Int?
+    public var keepMonths: Int?
+    public static let defaultWeeks = 4
+    public static let defaultMonths = 6
+    public static let dailyWindow = 7
     public init() {}
     public func validate() throws {
         guard version == 1, (3...30).contains(keep), (consecutiveFailures ?? 0) >= 0,
+              (0...12).contains(keepWeeks ?? Self.defaultWeeks), (0...24).contains(keepMonths ?? Self.defaultMonths),
               (lastFailureReason?.count ?? 0) <= 300, (lastWarning?.count ?? 0) <= 300 else { throw StorageError.invalidDocument }
         if target == .folder { guard let folderBookmark, !folderBookmark.isEmpty else { throw StorageError.invalidDocument } }
         if target == .webDAV { _ = try Self.webDAVDirectory(endpoint) }
@@ -96,23 +106,64 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
     /// `waitingForUpload`: written but not in the cloud yet, so they do not
     /// replace what is there: `keep` archives stay besides them, and of
     /// themselves the `keep` newest, so a full iCloud cannot fill the device.
-    public func obsolete(_ names: [String], verified: String, waitingForUpload: Set<String> = []) -> [String] {
-        guard timestamp(verified) != nil else { return [] }
+    /// Of the uploaded ones also the newest of each day (last 7 days), week
+    /// (`keepWeeks`) and month (`keepMonths`) before the verified archive stay,
+    /// so a notebook deleted weeks ago can still be brought back.
+    public func obsolete(_ names: [String], verified: String, waitingForUpload: Set<String> = [],
+                         calendar: Calendar = .current) -> [String] {
+        guard let reference = timestamp(verified) else { return [] }
         let sorted = Set(names).filter { timestamp($0) != nil && $0 != verified }
             .sorted { timestamp($0)! > timestamp($1)! }
+        let tiered = tieredKeep(sorted.filter { !waitingForUpload.contains($0) }, reference: Date(timeIntervalSince1970: reference),
+                                calendar: calendar)
         var kept = waitingForUpload.contains(verified) ? 0 : 1
         var waiting = waitingForUpload.contains(verified) ? 1 : 0
         return sorted.filter { name in
             if waitingForUpload.contains(name) { waiting += 1; return waiting > keep }
             kept += 1
-            return kept > keep
+            return kept > keep && !tiered.contains(name)
         }
+    }
+
+    /// Newest uploaded archive per day/week/month within the windows before `reference`.
+    func tieredKeep(_ newestFirst: [String], reference: Date, calendar: Calendar) -> Set<String> {
+        var keep = Set<String>()
+        func newestPer(_ components: Set<Calendar.Component>, back count: Int, unit: Calendar.Component) {
+            guard count > 0, let start = calendar.date(byAdding: unit, value: -count, to: reference) else { return }
+            var seen = Set<DateComponents>()
+            for name in newestFirst {
+                guard let time = timestamp(name) else { continue }
+                let date = Date(timeIntervalSince1970: time)
+                // Within the window, the reference day itself counting as the first.
+                guard date > start, date <= reference else { continue }
+                if seen.insert(calendar.dateComponents(components, from: date)).inserted { keep.insert(name) }
+            }
+        }
+        newestPer([.year, .month, .day], back: Self.dailyWindow, unit: .day)
+        newestPer([.yearForWeekOfYear, .weekOfYear], back: keepWeeks ?? Self.defaultWeeks, unit: .weekOfYear)
+        newestPer([.year, .month], back: keepMonths ?? Self.defaultMonths, unit: .month)
+        return keep
     }
     public static func webDAVDirectory(_ string: String) throws -> URL {
         guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme?.lowercased() == "https", url.host != nil, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil else { throw StorageError.invalidDocument }
         return url.hasDirectoryPath ? url : url.appendingPathComponent("", isDirectory: true)
+    }
+    /// Scheme, host and port that receive the Authorization header, normalised
+    /// (lowercase, default port made explicit); nil when any part is missing.
+    public static func webDAVServer(_ string: String) -> String? {
+        guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(), !host.isEmpty,
+              let port = url.port ?? ["https": 443, "http": 80][scheme] else { return nil }
+        return "\(scheme)://\(host):\(port)"
+    }
+    /// A stored password may only be reused for the server it was entered for:
+    /// same scheme, host and port; the folder path may differ. Unusable
+    /// addresses never match.
+    public static func sameWebDAVServer(_ stored: String, _ entered: String) -> Bool {
+        guard let stored = webDAVServer(stored), let entered = webDAVServer(entered) else { return false }
+        return stored == entered
     }
 }
 

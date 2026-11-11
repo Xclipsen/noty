@@ -118,6 +118,14 @@ public struct SchoolDayContentState: Codable, Hashable, Sendable {
         self.number = number; self.count = count; self.dayStart = dayStart; self.dayEnd = dayEnd
     }
 
+    /// True while the first lesson is still further away than the countdown
+    /// range: `before` holds from midnight on, but `phaseStart` is only
+    /// `CalendarSchoolDay.leadTime` before the lesson (the tile starts then).
+    /// A countdown over `phaseStart...phaseEnd` would lie entirely in the
+    /// future, so the widget „Heute“ shows the start time until `phaseStart`
+    /// (a transition, so its timeline has an entry there).
+    public func showsStartTime(at time: Int) -> Bool { phase == .before && time < phaseStart }
+
     /// The JSON as the push service sends it (ActivityKit: at most 4 KB with the attributes).
     public func encoded() throws -> Data {
         let encoder = JSONEncoder()

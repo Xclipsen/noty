@@ -13,8 +13,9 @@ import argparse
 import json
 from pathlib import Path
 import struct
+import sys
 import zlib
-from notebook_format import check, strict, uuid_string, validate_notebook
+from notebook_format import check, strict, uuid_string, valid_title, validate_notebook
 from record_archive import MAXIMUM_HEADER, RecordReader, check_date, check_references
 
 MAGIC = b"NOTYBKP\n"
@@ -102,6 +103,13 @@ def main() -> None:
     result = {"valid": True, "formatVersion": info["formatVersion"], "schemaVersion": notebook["schemaVersion"],
               "kind": notebook.get("kind") or "notebook",
               "pageCount": len(notebook["pages"]), "assets": info["assets"], "assetBytes": info["assetBytes"]}
+    # A notebook file is never refused because of its title (an own older
+    # backup must stay restorable): noty normalises it on import
+    # (NotebookTitles.sanitized). Reported as a warning only.
+    if not valid_title(notebook["title"]):
+        result["warnings"] = ["Title is not a valid library title (1-120 characters, no control characters); "
+                              "noty normalises it on import"]
+        print("warning: " + result["warnings"][0], file=sys.stderr)
     if args.compare:
         result["complete_contents_match"] = notebook == json.loads(args.compare.read_bytes())
         check(result["complete_contents_match"], "Complete contents do not match comparison revision")

@@ -75,29 +75,26 @@ struct BackupSettingsPage: View {
                 Text("Alle Hefte, Ordner, der Papierkorb und die Werkzeugeinstellungen in einer Datei, etwa für ein anderes iPad. Dazu der Kalender: eigene und gelöschte Termine, Terminnotiz-Verknüpfungen, Fachfarben und der Offline-Stundenplan. WebUntis-Zugangsdaten sind nie enthalten; ein einzelnes Heftbackup enthält keinen Kalender.")
             }
             Section {
-                NavigationLink { historyView } label: {
-                    SettingLabel("Ältere automatische Backups", detail: "Inhalt ansehen und einzelne Hefte als Kopie zurückholen oder ersetzen.")
+                NavigationLink { RestoreSettingsPage(library: library, externalBackup: externalBackup, workspaces: workspaces) } label: {
+                    SettingLabel("Wiederherstellen …", detail: "Ein Heft auf einen früheren Stand bringen, Backups ansehen, die ganze Bibliothek zurückholen.")
                 }
-                .disabled(policy.target == .disabled)
                 .keyOption(.action { showingHistory = true })
-                Button("Bibliotheksbackup-Datei öffnen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
-                    .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
                 if DeveloperAccess.showsAreas(workspaces) {
                     NavigationLink {
-                        WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()
+                        WorkspacePickerList(model: workspaces, onSelect: onSelectArea, library: library).keyboardSheet()
                     } label: { LabeledContent("Bereiche", value: workspaces.title) }
                     .disabled(library.busy && !library.backgroundBusy)
                     .keyOption(.action { showingAreas = true })
                 }
             } header: { Text("Wiederherstellen") } footer: {
-                Text("Eine Bibliotheksbackup-Datei öffnet sich als eigener Bereich neben deiner Bibliothek, erreichbar unten in der Seitenleiste der Bibliothek. Frühere Stände eines Hefts findest du im Heft unter „Lokale Wiederherstellungspunkte“. Gelöschte Hefte liegen zuerst im Papierkorb."
+                Text("Alles zum Zurückholen an einem Ort, auch unter Einstellungen › Wiederherstellen. Gelöschte Hefte liegen zuerst im Papierkorb."
                      + (library.opened != nil ? " Export und Wiederherstellen erst nach dem Schließen des Hefts." : ""))
             }
         }
         .navigationTitle(SettingsPage.backup.title)
         .navigationDestination(isPresented: $showingForm) { backupForm }
-        .navigationDestination(isPresented: $showingHistory) { historyView }
-        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet() }
+        .navigationDestination(isPresented: $showingHistory) { RestoreSettingsPage(library: library, externalBackup: externalBackup, workspaces: workspaces) }
+        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea, library: library).keyboardSheet() }
         .keyboardSheet()
         .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView(activityTitle).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         // Results of backup work for VoiceOver (polish audit F10); steps ending in „…“ stay silent.
@@ -229,7 +226,14 @@ struct OlderBackupsView: View {
         .overlay { if model.busy { ProgressView(model.status.hasSuffix("…") ? model.status : "Backup wird geladen und geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .task { if !loaded { await reload() } }
         .refreshable { await reload() }
-        .sheet(item: $browsing) { backup in BackupContentsView(name: backup.name, model: model, library: library) }
+        .sheet(item: $browsing) { backup in
+            BackupContentsView(source: .automatic(name: backup.name, model: model), library: library,
+                               openAsArea: DeveloperAccess.visible ? { url in
+                                   let done = await workspaces.restoreLibrary(url)
+                                   if !done { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
+                                   return done
+                               } : nil)
+        }
         .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary, defaultFilename: NotyText.libraryFileName()) { result in
             if let url = file?.url { BackupScratch.remove(url) }
             file = nil
@@ -255,6 +259,9 @@ struct OlderBackupsView: View {
                     Image(systemName: "archivebox").foregroundStyle(.tint).frame(width: 26).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(NotyText.listDate(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0), seconds: true))
+                        if let summary = model.summary(name) {
+                            Text(summary.line).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
                         if model.placeholders.contains(name) {
                             Text("Nur in iCloud, wird beim Öffnen geladen").font(.caption).foregroundStyle(.secondary)
                         }
@@ -266,12 +273,15 @@ struct OlderBackupsView: View {
             .buttonStyle(.plain)
             Menu {
                 Button("Inhalt ansehen …", systemImage: "list.bullet.rectangle") { browsing = Browsed(name: name) }
-                Button("Ganze Bibliothek als eigenen Bereich öffnen …", systemImage: "square.stack") { Task {
-                    guard let archive = await model.retrieve(name) else { return }
-                    defer { BackupScratch.remove(archive.url) }
-                    restored = await workspaces.restoreLibrary(archive.url)
-                    if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
-                } }
+                // Test apps only: the normal noty brings a backup back into its own library (Phase 4).
+                if DeveloperAccess.visible {
+                    Button("Ganze Bibliothek als eigenen Bereich öffnen …", systemImage: "square.stack") { Task {
+                        guard let archive = await model.retrieve(name) else { return }
+                        defer { BackupScratch.remove(archive.url) }
+                        restored = await workspaces.restoreLibrary(archive.url)
+                        if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
+                    } }
+                }
                 Button("Datei exportieren …", systemImage: "square.and.arrow.up") { Task {
                     if let archive = await model.retrieve(name) { file = LibraryArchiveFile(url: archive.url); exporting = true }
                 } }

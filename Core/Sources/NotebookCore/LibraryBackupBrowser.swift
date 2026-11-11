@@ -33,7 +33,12 @@ public struct BackupCatalog: Equatable, Sendable {
     public let entries: [BackupNotebookEntry]
     /// Active today, but not active in the backup (created or restored since).
     public let newSince: [String]
+    /// Their identities, in the same order (Phase 4: „Ganze Bibliothek auf
+    /// diesen Stand bringen“ moves them to the trash).
+    public var newSinceIDs: [UUID] = []
     public let trashedInBackup: Int
+    /// Folder paths (titles from the top) of the backup's active notebooks, by notebook.
+    public var folderPaths: [UUID: [String]] { Dictionary(entries.map { ($0.id, $0.folderPath) }, uniquingKeysWith: { a, _ in a }) }
     public var differences: [BackupNotebookEntry] { entries.filter { $0.change != .unchanged } }
 }
 
@@ -64,9 +69,11 @@ public enum LibraryBackupBrowser {
                                                pageCount: notebook.pages, change: change, currentTitle: today?.title))
         }
         let inBackup = Set(entries.map(\.id))
-        let newSince = current.items.filter { !$0.isFolder && !current.isTrashed($0.id) && !inBackup.contains($0.id) }.map(\.title)
+        let added = current.items.filter { !$0.isFolder && !current.isTrashed($0.id) && !inBackup.contains($0.id) }
         let trashed = backup.items.filter { !$0.isFolder && backup.isTrashed($0.id) }.count
-        return BackupCatalog(createdAt: summary.createdAt, entries: entries, newSince: newSince, trashedInBackup: trashed)
+        var catalog = BackupCatalog(createdAt: summary.createdAt, entries: entries, newSince: added.map(\.title), trashedInBackup: trashed)
+        catalog.newSinceIDs = added.map(\.id)
+        return catalog
     }
 
     /// One streaming pass that writes each notebook of `titles` (ID → title of
@@ -105,6 +112,30 @@ public enum LibraryBackupBrowser {
         let head = String(NotebookTitles.sanitized(title).prefix(NotebookTitles.maximumLength - suffix.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (head.isEmpty ? "Heft" : head) + suffix
+    }
+
+    /// What „Ganze Bibliothek auf diesen Stand bringen“ does (Phase 4):
+    /// notebooks missing or different today come back (a changed one in place
+    /// of today's state, which goes to the trash), notebooks active today but
+    /// not in the backup go to the trash. Nothing is deleted for good.
+    public struct WholeRestorePlan: Equatable, Sendable {
+        public var replace: [BackupNotebookEntry] = []
+        public var bringBack: [BackupNotebookEntry] = []
+        public var toTrash: [UUID] = []
+        public var isEmpty: Bool { replace.isEmpty && bringBack.isEmpty && toTrash.isEmpty }
+    }
+
+    public static func wholeRestorePlan(_ catalog: BackupCatalog) -> WholeRestorePlan {
+        var plan = WholeRestorePlan()
+        for entry in catalog.entries {
+            switch entry.change {
+            case .changed: plan.replace.append(entry)
+            case .deleted, .trashed: plan.bringBack.append(entry)
+            case .unchanged: break
+            }
+        }
+        plan.toTrash = catalog.newSinceIDs
+        return plan
     }
 
     /// The folder of the backup if it still exists today (and is not in the

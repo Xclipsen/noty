@@ -263,6 +263,40 @@ struct RecordArchiveInvalid: Error {}
 struct RecordArchiveLimitExceeded: Error {}
 /// Bytes of an asset do not match its reference (size or SHA-256).
 struct RecordArchiveAssetMismatch: Error { let reference: ImageAssetReference }
+/// A local write while extracting originals failed (e.g. no space left on
+/// the device). Says nothing about the archive: the formats map it to their
+/// own "extraction failed" error, never to "invalid archive".
+struct RecordArchiveExtractionFailed: Error {
+    let underlying: Error
+
+    var outOfSpace: Bool { Self.isOutOfSpace(underlying, depth: 0) }
+
+    private static func isOutOfSpace(_ error: Error, depth: Int) -> Bool {
+        if let posix = error as? POSIXError { return posix.code == .ENOSPC || posix.code == .EDQUOT }
+        guard let cocoa = error as? CocoaError else { return false }
+        if cocoa.code == .fileWriteOutOfSpace { return true }
+        guard depth < 4, let underlying = cocoa.underlying else { return false }
+        return isOutOfSpace(underlying, depth: depth + 1)
+    }
+
+    /// Runs the local writes of an extraction; whatever they throw is a
+    /// failure of this device's storage, not of the archive read so far.
+    @discardableResult
+    static func writing<T>(_ body: () throws -> T) throws -> T {
+        do { return try body() }
+        catch let error as RecordArchiveExtractionFailed { throw error }
+        catch { throw RecordArchiveExtractionFailed(underlying: error) }
+    }
+
+    /// Embedded originals (schema ≤ 11) written like asset records. Their
+    /// names are the hashes of their own bytes, so only an unusable
+    /// reference can be the archive's fault.
+    static func persisting(_ inline: InlineImageAssets, to directory: URL) throws {
+        do { try NotebookAssets(directory: directory).persist(inline.references, from: inline) }
+        catch ImageAssetError.invalidReference { throw ImageAssetError.invalidReference }
+        catch { throw RecordArchiveExtractionFailed(underlying: error) }
+    }
+}
 
 /// What a reader does with asset payloads.
 enum RecordAssetHandling {
@@ -455,9 +489,12 @@ struct RecordReader<Source: RecordArchiveSource> {
             let file = directory.appendingPathComponent(reference.sha256, isDirectory: false)
             let temporary = directory.appendingPathComponent("\(reference.sha256).partial-\(UUID().uuidString)", isDirectory: false)
             guard !FileManager.default.fileExists(atPath: file.path) else { throw RecordArchiveInvalid() }
-            try Data().write(to: temporary, options: .withoutOverwriting)
+            try RecordArchiveExtractionFailed.writing { try Data().write(to: temporary, options: .withoutOverwriting) }
             partial = temporary; target = file
-            do { output = try FileHandle(forWritingTo: temporary) } catch { try? FileManager.default.removeItem(at: temporary); throw error }
+            do { output = try FileHandle(forWritingTo: temporary) } catch {
+                try? FileManager.default.removeItem(at: temporary)
+                throw RecordArchiveExtractionFailed(underlying: error)
+            }
         }
         var finished = false
         defer {
@@ -469,16 +506,18 @@ struct RecordReader<Source: RecordArchiveSource> {
             try drained {
                 let block = try next(wanted)
                 if hashing { hasher.update(block) }
-                try output?.write(contentsOf: block)
+                try RecordArchiveExtractionFailed.writing { try output?.write(contentsOf: block) }
             }
             count += wanted
         }
         if hashing, hasher.finalizeHex() != reference.sha256 { throw BackupError.checksumMismatch }
         if let handle = output, let partial, let target {
-            try handle.synchronize()
-            output = nil
-            try handle.close()
-            try FileManager.default.moveItem(at: partial, to: target)
+            try RecordArchiveExtractionFailed.writing {
+                try handle.synchronize()
+                output = nil
+                try handle.close()
+                try FileManager.default.moveItem(at: partial, to: target)
+            }
         }
         finished = true
         records += 1; payloadBytes += count

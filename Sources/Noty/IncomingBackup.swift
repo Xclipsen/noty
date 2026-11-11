@@ -74,11 +74,41 @@ enum IncomingBackup {
             return
         }
         defer { BackupScratch.remove(copy); removeFromInbox(url) }
-        if kind == "notylibrary" { await offerLibrary(copy, progress: progress, library: library, workspaces: workspaces) }
+        if kind == "notylibrary" {
+            // Three ways (docs/LIBRARY.md 11.11.2026, BACKUP-RESTORE-PLAN Phase 4): everything into this
+            // library with its folders, the contents to bring single notebooks back, or – only in the
+            // test apps – a separate Bereich.
+            await TopAlert.dismiss(progress)
+            var actions: [(String, UIAlertAction.Style, LibraryChoice)] = [
+                ("Alles in diese Bibliothek übernehmen …", .default, .merge),
+                ("Inhalt ansehen und Hefte zurückholen", .default, .browse)]
+            if DeveloperAccess.visible { actions.append(("Als neuen Bereich wiederherstellen", .default, .area)) }
+            guard let choice = await TopAlert.choose("Bibliotheksbackup öffnen",
+                "„Alles übernehmen“ legt die Ordner der Datei in dieser Bibliothek an (gleichnamige werden benutzt) und holt jedes Heft als neues Heft dazu; vorhandene Hefte bleiben unverändert. „Inhalt ansehen“ zeigt die Hefte der Datei zum einzelnen Zurückholen.",
+                actions: actions) else { return }
+            switch choice {
+            case .area: await offerLibrary(copy, progress: nil, library: library, workspaces: workspaces)
+            case .merge: await library.importFolders(from: copy, base: nil, isScratchCopy: true)
+            case .browse:
+                // The view takes over the checked copy (the deferred removal then finds nothing).
+                guard let own = try? BackupScratch.newFile("notylibrary"), (try? FileManager.default.moveItem(at: copy, to: own)) != nil else {
+                    TopAlert.show("Kein Platz", "Die Datei konnte nicht zwischengespeichert werden. Es wurde nichts verändert.")
+                    return
+                }
+                guard RestoreRouter.shared.show(RestoreRouter.Archive(url: own, title: "Bibliotheksbackup")) else {
+                    TopAlert.show("Schon ein Bibliotheksbackup geöffnet", "Bitte zuerst das geöffnete Bibliotheksbackup schließen, dann diese Datei erneut öffnen. Es wurde nichts verändert.")
+                    return
+                }
+                if !RestoreRouter.shared.libraryFree {
+                    TopAlert.show("Bibliotheksbackup", "Der Inhalt erscheint, sobald das geöffnete Heft, die Einstellungen oder das offene Fenster geschlossen sind.")
+                }
+            }
+            return
+        }
         else { await offerNotebook(copy, progress: progress, library: library) }
     }
 
-    private enum LibraryChoice: Sendable { case merge, area }
+    private enum LibraryChoice: Sendable { case merge, browse, area }
 
     private static func offerLibrary(_ copy: URL, progress: UIAlertController?, library: LibraryModel, workspaces: WorkspaceAppModel) async {
         let prepared: PreparedLibraryRestore
@@ -94,20 +124,21 @@ enum IncomingBackup {
         let size = ByteCountFormatter.string(fromByteCount: Int64(summary.file.byteCount), countStyle: .file)
         var message = "Gesichert am \(NotyText.listDate(summary.createdAt)) · \(NotyText.count(summary.notebooks.count, "Heft", "Hefte")), \(summary.folderCount) Ordner, \(NotyText.count(summary.trashedCount, "Eintrag", "Einträge")) im Papierkorb · \(size)."
         if let calendar = summary.calendar { message += "\n\n" + NotyText.calendarRestoreSummary(calendar) }
-        message += "\n\n„In diese Bibliothek übernehmen“ legt die Ordner der Datei hier an (vorhandene gleichnamige werden benutzt) und holt jedes Heft als neues Heft dazu; vorhandene Hefte bleiben unverändert."
-            + "\n\n„Als neuen Bereich wiederherstellen“ legt alles als getrennten Bereich an. Die aktuelle Bibliothek bleibt unverändert."
-        let choice = await TopAlert.choose("Bibliotheksbackup öffnen", message, actions: [
-            ("In diese Bibliothek übernehmen …", .default, LibraryChoice.merge),
-            ("Als neuen Bereich wiederherstellen", .default, .area)])
-        guard choice == .area else {
-            await workspaces.discardLibraryRestore(prepared)
-            // The checked copy stays until this function returns; the merge asks once more with the details.
-            if choice == .merge { await library.importFolders(from: copy, base: nil, isScratchCopy: true) }
-            return
+        message += "\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
+        guard await TopAlert.ask("Bibliotheksbackup wiederherstellen?", message, confirm: "Als neuen Bereich wiederherstellen") else {
+            await workspaces.discardLibraryRestore(prepared); return
         }
         let running = TopAlert.progress("Bereich wird angelegt …")
-        // A running area switch is no reason to throw the checked file away.
-        while workspaces.busy { try? await Task.sleep(for: .milliseconds(100)) }
+        // A running area switch is no reason to throw the checked file away,
+        // but this dialog has no button: never wait for ever.
+        var waited = 0
+        while workspaces.busy, waited < 300 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        guard !workspaces.busy else {
+            await workspaces.discardLibraryRestore(prepared)
+            await TopAlert.dismiss(running)
+            TopAlert.show("Bereich nicht angelegt", "Ein anderer Bereichsvorgang läuft noch. Es wurde nichts verändert. Die Datei bitte später erneut öffnen.")
+            return
+        }
         do {
             let area = try await workspaces.commitLibraryRestore(prepared)
             await TopAlert.dismiss(running)
@@ -132,7 +163,8 @@ enum IncomingBackup {
         await TopAlert.dismiss(progress)
         let document = decoded.document, trashed = document.deletedPages?.count ?? 0
         let kind = document.isTextDocument ? "Textdokument" : "Heft"
-        let summary = "„\(document.title)“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
+        // The file's title is shown and stored only normalised (any length, line breaks).
+        let summary = "„\(NotebookTitles.sanitized(document.title))“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
             + (decoded.isLegacyJSON ? " · altes Format ohne Prüfsumme" : "")
         let collision: LibraryModel.ImportCollision?
         if let existing = library.snapshot.activeNotebook(document.id) {

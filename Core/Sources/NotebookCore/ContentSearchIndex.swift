@@ -342,6 +342,10 @@ public actor ContentSearchIndexStore {
 
     public func remove(_ ids: [UUID]) { for id in ids { try? fm.removeItem(at: url(id)) } }
 
+    /// Removes the whole index directory of an area that no longer exists.
+    /// Derived data: an error is ignored, a later `save` creates it again.
+    public func removeAll() { try? fm.removeItem(at: directory) }
+
     /// Removes the index of every notebook that no longer exists (trashed ones are kept).
     @discardableResult
     public func prune(keeping ids: Set<UUID>) -> Int {

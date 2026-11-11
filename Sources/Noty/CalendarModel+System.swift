@@ -259,7 +259,12 @@ extension CalendarModel {
         guard !updates.isEmpty, canWrite else { return }
         await commit { state in
             for index in state.noteLinks.indices {
-                if let anchor = updates[state.noteLinks[index].id] { state.noteLinks[index].target = .system(anchor) }
+                guard let anchor = updates[state.noteLinks[index].id] else { continue }
+                // The event's topic follows its note to the new identity.
+                if case .system(let old) = state.noteLinks[index].target {
+                    CalendarSourceMove.retarget(topics: &state.lessonTopics, from: old, to: anchor)
+                }
+                state.noteLinks[index].target = .system(anchor)
             }
         }
     }
@@ -546,6 +551,7 @@ extension CalendarModel {
                 state.deletedEvents.removeFirst(state.deletedEvents.count - CalendarState.maximumDeleted)
             }
             CalendarSourceMove.retargetLocal(&state.noteLinks, event: id, to: anchor)
+            CalendarSourceMove.retargetLocal(topics: &state.lessonTopics, event: id, to: anchor)
         }
         reloadSystemCalendars()
         if ok {
@@ -579,6 +585,7 @@ extension CalendarModel {
         let ok = await commit { state in
             state.events.append(event)
             CalendarSourceMove.retargetSystem(&state.noteLinks, from: anchor, to: event.id)
+            CalendarSourceMove.retargetSystem(topics: &state.lessonTopics, from: anchor, to: event.id)
         }
         guard ok else {
             reloadSystemCalendars()
@@ -611,7 +618,10 @@ extension CalendarModel {
         try service.save(event, span: .thisEvent)
         if let moved = SystemCalendarService.map(event, calendar: calendar), moved.anchor != value.anchor {
             let old = value.anchor, new = moved.anchor
-            await commit { CalendarSourceMove.retarget(&$0.noteLinks, from: old, to: new) }
+            await commit {
+                CalendarSourceMove.retarget(&$0.noteLinks, from: old, to: new)
+                CalendarSourceMove.retarget(topics: &$0.lessonTopics, from: old, to: new)
+            }
         }
         reloadSystemCalendars()
         return nil
