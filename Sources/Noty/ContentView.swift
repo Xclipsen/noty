@@ -235,7 +235,7 @@ struct ContentView: View {
                     addingPage = false
                 }, onPDF: { url, margins, position in
                     let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
-                    model.insertPDF(url, relativeTo: anchor, before: position == .before, writingArea: margins)
+                    model.insertPageFile(url, relativeTo: anchor, before: position == .before, writingArea: margins)
                     addingPage = false
                 }, onError: { model.error = $0 })
         }

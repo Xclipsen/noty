@@ -1,6 +1,17 @@
 # Lokaler Revisionsspeicher – Format 1
 
 
+## Ergänzung 14.11.2026 · Seiten aus .noty einfügen (kein neues Schema)
+
+Wunsch des Nutzers: eine `.noty`-Datei (z. B. die erzeugte Probeklausur) als Seiten in ein bestehendes Heft holen. Weg: „Seite hinzufügen“ › „Aus Dateien wählen“ nimmt jetzt neben PDF und Bild auch `.noty`/`.notybackup` an (`NotyPageFile`, `EditorModel.insertPageFile` → `insertNotyPages`).
+
+- **Lesen:** Die Datei wird vollständig in einen eigenen Zwischenordner (`BackupScratch.newFolder`) kopiert und dort mit `BackupArchive.verify(…, extractingAssetsTo:)` geprüft (Format 2: jede Prüfsumme und jedes Bildoriginal; Format 1 und Prototyp-JSON wie beim Import). Der Zwischenordner wird auf allen Wegen entfernt. Die Datei selbst wird nie verändert oder als Heft gespeichert.
+- **Einfügen (Core `Notebook.insertPages(of:at:)`):** nur die aktiven Seiten, mit neuen Seiten- und Objekt-IDs (`Page.independentCopy`), Lesezeichen, Papier, Schreibplatz, Ink, Textfelder, Formen und Bilder bleiben. PDF-Originale der eingefügten Seiten kommen mit neuer Quell-ID mit; ein bytegleiches Original im Heft wird wiederverwendet. Seitenpapierkorb, Titel, Umschlag und Aussehen der Datei bleiben draußen. Alte Formen der Datei (eingebettete PDF, Seitentext, Textfluss) werden vorher in die heutigen überführt. Das Schema des Hefts steigt höchstens auf das der Datei (nie 15). Alles oder nichts; ein Undo-Schritt wie beim PDF-Einfügen.
+- **Bilder:** Neue Originale (nach SHA-256) werden aus dem geprüften Zwischenordner gelesen, erneut gehasht und im Asset-Speicher des Pakets vorgemerkt (`NotebookAssets.stage`); der nächste Commit schreibt sie wie beim Bildimport vor der Revision. Scheitert etwas, werden nur die von diesem Versuch vorgemerkten Originale wieder verworfen. Grenzen: 500 Seiten, 100 MB PDF-Originale je Heft, 500 MB Bilder je Heft, 100 MB vorgemerkte Bilder bis zum Commit.
+- **Abgelehnt:** Textdokumente (als Quelle oder Ziel), zu viele Seiten, zu große Originale; die Meldung nennt den Grund, das Heft bleibt unverändert.
+
+Tests: `NotebookPageImportTests` (7). Stand siehe TESTING.
+
 ## Ergänzung 06.11.2026 · Kalenderpaket Format 4 (Stufe C)
 
 Nur `feat/kalender`, Test-App „noty calendar“ ab Build 127 (veröffentlicht laut Commit; Installation von Build 139 durch den Nutzer bestätigt, Kalenderdaten am iPad ungeprüft). **Aktuelles Kalenderformat ist 4** (`CalendarState.currentFormat` in `Core/Sources/NotebookCore/CalendarData.swift`); die Abschnitte zu Format 1–3 unten gelten weiter für Aufbau, Commit und Migration. Stand je Funktion: [CALENDAR-PLAN](CALENDAR-PLAN.md#8-datenformat-speicherpfade-und-feste-schlüssel), Nachweise: [CALENDAR-LOG](CALENDAR-LOG.md#build-127--ui-überarbeitung-stufe-c-hausaufgaben-ferien-nrw-06112026).
