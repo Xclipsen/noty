@@ -904,6 +904,93 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// The pages of a `.noty` file into this notebook (docs/STORAGE.md,
+    /// „Seiten aus .noty einfügen“): the file is copied locally and checked
+    /// completely (every image original verified into a scratch folder), its
+    /// active pages go in with new IDs as one undo step, new image originals
+    /// are staged for the commit. The file itself is never changed or stored.
+    func insertNotyPages(_ url: URL, relativeTo anchor: UUID, before: Bool = false) {
+        if mutationsPaused {
+            let access = url.startAccessingSecurityScopedResource()
+            Task {
+                await awaitMutationAccess()
+                insertNotyPages(url, relativeTo: anchor, before: before)
+                if access { url.stopAccessingSecurityScopedResource() }
+            }
+            return
+        }
+        guard writable, !mutationsPaused, !busy, !imageReading else { return }
+        busy = true
+        let access = url.startAccessingSecurityScopedResource()
+        Task {
+            var scratch: URL?
+            var staged: [ImageAssetReference] = []
+            defer {
+                if access { url.stopAccessingSecurityScopedResource() }
+                if let scratch { try? FileManager.default.removeItem(at: scratch) }
+                busy = false
+            }
+            do {
+                let folder = try BackupScratch.newFolder()
+                scratch = folder
+                let assetFolder = folder.appendingPathComponent("Assets", isDirectory: true)
+                let document = try await withImportTimeLimit {
+                    try await Task.detached(priority: .userInitiated) { () throws -> Notebook in
+                        let copy = folder.appendingPathComponent("Datei.noty")
+                        try CoordinatedBackupFiles().reading(url, metadataOnly: false) { source in
+                            _ = try BoundedFile.copy(from: source, to: copy, limit: BackupArchive.maximumFileBytes)
+                        }
+                        try FileManager.default.createDirectory(at: assetFolder, withIntermediateDirectories: true)
+                        return try BackupArchive.verify(copy, extractingAssetsTo: assetFolder).document
+                    }.value
+                }
+                // Which originals are new for this notebook decides what is read.
+                guard let probeIndex = notebook.pages.firstIndex(where: { $0.id == anchor }) else { throw PageOperationError.missingPage }
+                var probe = notebook
+                let needed = try probe.insertPages(of: document, at: probeIndex + (before ? 0 : 1)).newAssets
+                let originals = try await Task.detached(priority: .userInitiated) { () throws -> [Data] in
+                    try needed.map { reference in
+                        let data = try BoundedFile.read(assetFolder.appendingPathComponent(reference.sha256), limit: ImageLimits.maximumFileBytes)
+                        guard ImageAssetReference(of: data) == reference else { throw ImageAssetError.damaged(reference.sha256) }
+                        return data
+                    }
+                }.value
+                // From here on without suspension: the notebook cannot change in between.
+                guard writable, let index = notebook.pages.firstIndex(where: { $0.id == anchor }) else { throw PageOperationError.missingPage }
+                let previous = notebook
+                let selected = page.id
+                var candidate = notebook
+                let result = try candidate.insertPages(of: document, at: index + (before ? 0 : 1))
+                let read = Dictionary(uniqueKeysWithValues: zip(needed.map(\.sha256), originals))
+                let pendingBefore = Set(imageAssets.pendingReferences.map(\.sha256))
+                for reference in result.newAssets {
+                    guard let data = read[reference.sha256] else { throw ImageAssetError.missing(reference.sha256) }
+                    guard try imageAssets.stage(data) == reference else { throw ImageAssetError.damaged(reference.sha256) }
+                    if !pendingBefore.contains(reference.sha256) { staged.append(reference) }
+                }
+                let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
+                sources = catalogue
+                pdfOutline = catalogue.outline
+                notebook = candidate
+                staged = []
+                if let first = result.pageIDs.first, let position = candidate.pages.firstIndex(where: { $0.id == first }) { pageIndex = position }
+                recordPageOperation(before: previous, undoPageID: selected)
+                save()
+                fileStatus = NotyText.count(result.pageIDs.count, "Seite", "Seiten") + " aus „\(NotebookTitles.sanitized(document.title))“ eingefügt"
+            } catch {
+                // Only originals this attempt added; ones pending for other changes stay.
+                if !staged.isEmpty { imageAssets.dropPending(staged) }
+                self.error = "Seiten nicht eingefügt: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// PDF, picture or `.noty` from „Seite hinzufügen“.
+    func insertPageFile(_ url: URL, relativeTo anchor: UUID, before: Bool = false, writingArea: PageMargins? = nil) {
+        if NotyPageFile.isNotebook(url) { insertNotyPages(url, relativeTo: anchor, before: before) }
+        else { insertPDF(url, relativeTo: anchor, before: before, writingArea: writingArea) }
+    }
+
     /// A shared PDF/picture (`IncomingFiling`) into this open notebook: this
     /// model is the package's single writer, so the pages go in as one undo
     /// step and the normal autosave commits them. The current page stays
@@ -1262,6 +1349,17 @@ extension UTType {
     /// Former extension of the same format; stays importable.
     static let notyBackup = UTType(exportedAs: "de.la.noty.backup", conformingTo: .data)
     static let notyLibrary = UTType(exportedAs: "de.la.noty.library", conformingTo: .data)
+}
+
+/// What „Seite hinzufügen“ accepts from Files: PDFs, pictures and notebook files.
+enum NotyPageFile {
+    static let contentTypes: [UTType] = [.pdf, .image, .noty, .notyBackup]
+    /// A `.noty`/`.notybackup` file (its pages are inserted), not a PDF or picture.
+    static func isNotebook(_ url: URL) -> Bool {
+        if NotyFile.notebookExtensions.contains(url.pathExtension.lowercased()) { return true }
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return type.conforms(to: .noty) || type.conforms(to: .notyBackup)
+    }
 }
 
 /// Editor exports: a PDF in memory or a verified backup file. A backup is
