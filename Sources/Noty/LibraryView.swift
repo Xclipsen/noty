@@ -929,6 +929,7 @@ struct LibraryView: View {
             }
         }
             .toolbar { leadingToolbar }
+            .toolbar { settingsToolbar }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
             .safeAreaInset(edge: .top, spacing: 0) {
                 // After an interrupted launch (LaunchGuard).
@@ -1049,8 +1050,15 @@ struct LibraryView: View {
             .disabled(!editable)
             .accessibilityLabel("Neu oder importieren")
         }
+    }
+
+    /// The gear on both sides (Hefte and Kalender): before 14.11.2026 it was
+    /// part of `libraryToolbar`, which only the collection carries, so the
+    /// calendar had no way into the settings (Nutzerbefund).
+    @ToolbarContentBuilder private var settingsToolbar: some ToolbarContent {
         ToolbarItem(placement: Self.settingsPlacement) {
             Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
+                .help("Einstellungen")
         }
     }
 
